@@ -229,7 +229,7 @@ col4.metric("Highest Alert Level", df_affected.iloc[0]["Alert Level"].split(" ")
 tab1, tab2, tab3 = st.tabs(["🗺️ Geospatial Threat Map", "📋 Municipal Impact Matrix", "📑 PDF Reports & Notification Dispatch"])
 
 with tab1:
-    m = folium.Map(location=[18.5, 82.5], zoom_start=5, tiles="CartoDB positron")
+    m = folium.Map(location=[18.5, 82.5], zoom_start=5, tiles="OpenStreetMap")
     for _, r in df_all.iterrows():
         color_code = "red" if "RED" in r["Alert Level"] else "orange" if "ORANGE" in r["Alert Level"] else "yellow" if "YELLOW" in r["Alert Level"] else "blue" if "BLUE" in r["Alert Level"] else "green"
         folium.Circle(
