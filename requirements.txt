@@ -1,1 +1,8 @@
-
+streamlit
+earthengine-api
+pandas
+reportlab
+requests
+folium
+streamlit-folium
+tabulate
