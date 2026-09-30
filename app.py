@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 import ee
 import folium
 from streamlit_folium import st_folium
+import io
+from gtts import gTTS
 
 # ReportLab modules for PDF generation
 from reportlab.lib.pagesizes import A4
@@ -226,7 +228,7 @@ col3.metric("Peak Sustained Wind", f"{df_all['Max Wind (km/h)'].max()} km/h")
 col4.metric("Highest Alert Level", df_affected.iloc[0]["Alert Level"].split(" ")[0] if not df_affected.empty else "NORMAL")
 
 # --- Layout: Map & Impact Table ---
-tab1, tab2, tab3 = st.tabs(["🗺️ Geospatial Threat Map", "📋 Municipal Impact Matrix", "📑 PDF Reports & Notification Dispatch"])
+tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Geospatial Threat Map", "📋 Municipal Impact Matrix", "📑 PDF Reports & Notification Dispatch", "🔊 Multilingual Voice Broadcasts"])
 
 with tab1:
     m = folium.Map(location=[18.5, 82.5], zoom_start=5, tiles="OpenStreetMap")
@@ -276,3 +278,186 @@ with tab3:
             st.success(f"Dispatched dual-briefing alerts with attached PDFs to {len(df_affected['Email'].unique())} authorities: {', '.join(df_affected['Email'].unique())}")
     else:
         st.success("No cities currently cross the alert threshold.")
+
+with tab4:
+    st.subheader("📢 Automated Regional Voice Alerts & Public Broadcasts")
+    st.markdown("Pre-rendered voice alerts generated in the native language of each affected jurisdiction.")
+    
+    if not df_affected.empty:
+        for idx, row in df_affected.iterrows():
+            city = row["City"]
+            state = row["State"]
+            wind = row["Max Wind (km/h)"]
+            alert_lvl = row["Alert Level"]
+
+            # Generate regional text
+            alert_data = generate_localized_alert(city, state, wind)
+            
+            with st.expander(f"📍 **{city} ({state})** — Language: {alert_data['lang_name']} | Status: {alert_lvl}", expanded=True):
+                col_txt, col_audio = st.columns([2, 1])
+                
+                with col_txt:
+                    st.markdown(f"**Native Alert ({alert_data['lang_name']}):**")
+                    st.info(alert_data["localized_text"])
+                    st.caption(f"**English Translation:** {alert_data['english_text']}")
+                
+                with col_audio:
+                    st.markdown("**🔊 Listen to Voice Broadcast:**")
+                    # Generate audio on the fly
+                    audio_bytes = synthesize_voice_alert(alert_data["localized_text"], alert_data["lang_code"])
+                    st.audio(audio_bytes, format="audio/mp3")
+                    
+                    st.download_button(
+                        label=f"⬇️ Download {city} Voice Alert (.mp3)",
+                        data=audio_bytes,
+                        file_name=f"Voice_Alert_{city}_{alert_data['lang_code']}.mp3",
+                        mime="audio/mp3",
+                        key=f"audio_btn_{idx}"
+                    )
+    else:
+        st.success("No active storm warnings. Regional voice broadcast generators on standby.")
+
+
+
+# ============================================================
+# State Language Routing & Template Engine
+# ============================================================
+
+STATE_LANGUAGE_MAP = {
+    "Tamil Nadu": {"lang_code": "ta", "lang_name": "Tamil"},
+    "Puducherry": {"lang_code": "ta", "lang_name": "Tamil"},
+    "Andhra Pradesh": {"lang_code": "te", "lang_name": "Telugu"},
+    "West Bengal": {"lang_code": "bn", "lang_name": "Bengali"},
+    "Odisha": {"lang_code": "hi", "lang_name": "Hindi (Odia Fallback)"}, # gTTS uses hi/en; Bhashini/GCP uses 'or-IN'
+    "Maharashtra": {"lang_code": "mr", "lang_name": "Marathi"},
+    "Gujarat": {"lang_code": "gu", "lang_name": "Gujarati"},
+    "Kerala": {"lang_code": "ml", "lang_name": "Malayalam"},
+    "Karnataka": {"lang_code": "kn", "lang_name": "Kannada"},
+}
+
+MULTILINGUAL_TEMPLATES = {
+    "ta": (
+        "எச்சரிக்கை! {city} மற்றும் அதைச் சுற்றியுள்ள பகுதிகளில் புயல் காற்று மணிக்கு {wind} கிலோமீட்டர் வேகத்தில் வீசக்கூடும். "
+        "மீனவர்கள் கடலுக்குச் செல்ல வேண்டாம். தாழ்வான பகுதியில் உள்ளவர்கள் உடனடியாக அரசு புயல் நிவாரண முகாம்களுக்குச் செல்லவும்."
+    ),
+    "te": (
+        "హెచ్చరిక! {city} మరియు పరిసర ప్రాంతాలలో గంటకు {wind} కిలోమీటర్ల వేగంతో తుఫాను గాలులు వీచే అవకాశం ఉంది. "
+        "మత్స్యకారులు సముద్రంలోకి వెళ్లవద్దు. లోతట్టు ప్రాంతాల ప్రజలు వెంటనే తుఫాను పునరావాస కేంద్రాలకు వెళ్లాలి."
+    ),
+    "bn": (
+        "সতর্কবার্তা! {city} এবং পার্শ্ববর্তী অঞ্চলে ঘণ্টায় {wind} কিলোমিটার বেগে ঘূর্ণিঝড়ের সম্ভাবনা রয়েছে। "
+        "মৎস্যজীবীদের সমুদ্রে যেতে নিষেধ করা হচ্ছে। নিচু এলাকার বাসিন্দারা অবিলম্বে সাইক্লোন সেন্টারে আশ্রয় নিন।"
+    ),
+    "mr": (
+        "धोक्याची सूचना! {city} आणि लगतच्या किनारपट्टी भागात ताशी {wind} किलोमीटर वेगाने चक्रीवादळाचा इशारा आहे. "
+        "मासेमारांनी समुद्रात जाऊ नये. सखल भागातील नागरिकांनी तातडीने सुरक्षित निवाऱ्यात जावे."
+    ),
+    "gu": (
+        "ચેતવણી! {city} અને આસપાસના વિસ્તારોમાં પ્રતિ કલાકે {wind} કિલોમીટરની ઝડપે વાવાઝોડું ફૂંકાવાની શક્યતા છે. "
+        "માછીમારોને દરિયો ન ખેડવા સૂચના છે. નીચાણવાળા વિસ્તારોના લોકો તાત્કાલિક સલામત આશ્રયસ્થાનોમાં પહોંચે."
+    ),
+    "hi": (
+        "चेतावनी! {city} और तटीय क्षेत्रों में {wind} किलोमीटर प्रति घंटे की रफ्तार से चक्रवाती तूफान आने की संभावना है। "
+        "मछुआरों को समुद्र में न जाने की सलाह दी जाती है। निचले इलाकों के लोग तुरंत नजदीकी चक्रवात राहत शिविर में जाएं।"
+    ),
+    "en": (
+        "Emergency Alert! Severe cyclone wind speeds of {wind} km/h are expected in {city} and surrounding coastal belts. "
+        "Fishermen are strictly advised not to venture into the sea. Evacuate low-lying areas immediately."
+    )
+}
+
+# ============================================================
+# Localized Text Generator
+# ============================================================
+
+def generate_localized_alert(city_name, state_name, wind_speed):
+    """
+    Generates both native language text and English advisory.
+    """
+    lang_info = STATE_LANGUAGE_MAP.get(state_name, {"lang_code": "en", "lang_name": "English"})
+    lang_code = lang_info["lang_code"]
+    
+    # Retrieve template or fallback to Hindi / English
+    template = MULTILINGUAL_TEMPLATES.get(lang_code, MULTILINGUAL_TEMPLATES["en"])
+    
+    localized_message = template.format(city=city_name, wind=round(wind_speed, 1))
+    english_message = MULTILINGUAL_TEMPLATES["en"].format(city=city_name, wind=round(wind_speed, 1))
+    
+    return {
+        "lang_code": lang_code,
+        "lang_name": lang_info["lang_name"],
+        "localized_text": localized_message,
+        "english_text": english_message
+    }
+
+
+
+# ============================================================
+#  Voice Synthesizer (Text-to-Speech)
+# ============================================================
+
+def synthesize_voice_alert(text, lang_code, output_file=None):
+    """
+    Synthesizes localized audio using Google Text-to-Speech (gTTS).
+    Returns audio bytes and optionally saves to an MP3 file.
+    """
+    try:
+        # Generate speech in the native regional accent
+        tts = gTTS(text=text, lang=lang_code, slow=False)
+        
+        # Save to memory buffer or disk
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        
+        if output_file:
+            tts.save(output_file)
+            
+        return fp.getvalue()
+    except Exception as e:
+        print(f"TTS Error ({lang_code}): {e}")
+        # Fallback to English TTS
+        tts_fallback = gTTS(text=text, lang="en", slow=False)
+        fp_fallback = io.BytesIO()
+        tts_fallback.write_to_fp(fp_fallback)
+        fp_fallback.seek(0)
+        return fp_fallback.getvalue()
+
+
+# ============================================================
+#  Alert through Automated Outbound IVR Phone Calls
+# ============================================================
+
+
+def trigger_outbound_ivr_call(phone_number, audio_public_url):
+    """
+    Triggers an automated phone call playing the native voice alert.
+    Example using Twilio Voice API.
+    """
+    from twilio.rest import Client
+    
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+    client = Client(account_sid, auth_token)
+    
+    # Twilio plays the regional MP3 file upon answer
+    call = client.calls.create(
+        twiml=f'<Response><Play>{audio_public_url}</Play></Response>',
+        to=phone_number,
+        from_="+1XXXXXXXXXX"
+    )
+    return call.sid
+
+
+# ============================================================
+#  Alert through Whatsapp
+# ============================================================
+def send_whatsapp_voice_note(recipient_phone, audio_url):
+    headers = {"Authorization": f"Bearer {os.getenv('WHATSAPP_API_TOKEN')}"}
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": recipient_phone,
+        "type": "audio",
+        "audio": {"link": audio_url}
+    }
+    requests.post("https://graph.facebook.com/v18.0/YOUR_PHONE_ID/messages", json=payload, headers=headers)
